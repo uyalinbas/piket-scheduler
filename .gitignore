@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Excel temp files
+~$*.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local files
+*.log
+real data.xlsx
+real_template.xlsx
+demo_template.xlsx
+extract_real_data.py
