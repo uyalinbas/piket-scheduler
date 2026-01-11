@@ -157,9 +157,9 @@ def get_demo_fixed_assignments() -> List[FixedAssignment]:
 # ==================== SESSION STATE ====================
 def init_session_state():
     if 'employees' not in st.session_state:
-        st.session_state.employees = get_demo_employees()
+        st.session_state.employees = []  # Start empty, no demo data
     if 'fixed_assignments' not in st.session_state:
-        st.session_state.fixed_assignments = get_demo_fixed_assignments()
+        st.session_state.fixed_assignments = []  # Start empty
     if 'schedule_result' not in st.session_state:
         st.session_state.schedule_result = None
 
@@ -306,7 +306,7 @@ st.markdown('<div class="section-header">👥 Employees</div>', unsafe_allow_htm
 col_add, col_count = st.columns([1, 3])
 with col_add:
     if st.button("➕ Add Employee", use_container_width=True):
-        new_name = f"Employee {len(st.session_state.employees) + 1}"
+        new_name = f"User {len(st.session_state.employees) + 1}"
         st.session_state.employees.append(Employee(name=new_name))
         st.rerun()
 
@@ -416,7 +416,7 @@ st.markdown('<div class="section-header">⚙️ Scheduling Options</div>', unsaf
 
 link_fri_sat = st.checkbox(
     "🔗 Link Friday → Saturday (same employee) ⓘ",
-    value=False,
+    value=True,
     help="When enabled, the same employee works both Friday and Saturday each week"
 )
 
@@ -542,6 +542,11 @@ if st.session_state.schedule_result:
         
         st.markdown(f'<div class="info-box">ℹ️ Consecutive day pairs: {consec_pairs}</div>', unsafe_allow_html=True)
         
+        # Show released vacations if any
+        if hasattr(result, 'released_vacations') and result.released_vacations:
+            released_text = ", ".join([f"{name} ({start} to {end})" for name, start, end in result.released_vacations])
+            st.markdown(f'<div class="warning-box">⚠️ Released vacations for fairness: {released_text}</div>', unsafe_allow_html=True)
+        
         st.divider()
         
         # Results table
@@ -586,11 +591,20 @@ if st.session_state.schedule_result:
             with col2:
                 st.metric("WD Target (var)", f"{bounds['remaining_weekdays'] / len(result.employee_stats):.1f}" if result.employee_stats else "N/A")
             with col3:
-                wd_min, wd_max, _ = result.get_fairness_spread('weekday')
-                st.metric("WD Band", f"{wd_min}-{wd_max}")
+                # WD Band - exclude extra WE employees
+                pool_wd = [s.variable_weekdays for n, s in result.employee_stats.items()
+                           if not config.get_employee_by_name(n).is_extra_weekend]
+                if pool_wd:
+                    st.metric("WD Band", f"{min(pool_wd)}-{max(pool_wd)}")
+                else:
+                    st.metric("WD Band", "N/A")
             with col4:
-                we_min, we_max, _ = result.get_fairness_spread('weekend')
-                st.metric("WE Band", f"{we_min}-{we_max}")
+                # WE Band - all employees (extra WE's Var WE = pool share)
+                all_we = [s.variable_weekends for n, s in result.employee_stats.items()]
+                if all_we:
+                    st.metric("WE Band", f"{min(all_we)}-{max(all_we)}")
+                else:
+                    st.metric("WE Band", "N/A")
             
             # Stats table
             stats_data = []

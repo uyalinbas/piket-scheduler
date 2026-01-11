@@ -22,8 +22,15 @@ def compute_pool_stats(config: ScheduleConfig) -> Dict:
     all_dates = config.get_all_dates()
     weekday_dates = config.get_weekday_dates()
     weekend_dates = config.get_weekend_dates()
+    friday_dates = config.get_friday_dates()
     H = config.get_num_weeks()
     N = len(config.employees)
+    
+    # When Friday-Saturday link is active, Fridays are NOT part of the variable weekday pool
+    # They are automatically distributed with Saturdays
+    effective_weekday_dates = weekday_dates
+    if config.link_friday_saturday:
+        effective_weekday_dates = [d for d in weekday_dates if d.weekday() != FRIDAY]
     
     # Build fixed assignment lookup: day_of_week -> employee_name
     fixed_dow = {}
@@ -37,7 +44,8 @@ def compute_pool_stats(config: ScheduleConfig) -> Dict:
     
     for dow, emp_name in fixed_dow.items():
         if emp_name in fixed_weekdays_per_emp:
-            if dow in WEEKDAYS:
+            # When link is active, Friday is NOT a fixed weekday (it's tied to Saturday)
+            if dow in WEEKDAYS and not (dow == FRIDAY and config.link_friday_saturday):
                 fixed_weekdays_per_emp[emp_name] = H  # Full quota
             if dow in WEEKEND_DAYS:
                 fixed_weekends_per_emp[emp_name] = H  # Full quota
@@ -45,7 +53,7 @@ def compute_pool_stats(config: ScheduleConfig) -> Dict:
     total_fixed_weekdays = sum(fixed_weekdays_per_emp.values())
     total_fixed_weekends = sum(fixed_weekends_per_emp.values())
     
-    remaining_weekdays = len(weekday_dates) - total_fixed_weekdays
+    remaining_weekdays = len(effective_weekday_dates) - total_fixed_weekdays
     remaining_weekends = len(weekend_dates) - total_fixed_weekends
     
     # Account for extra weekend employee
@@ -56,7 +64,7 @@ def compute_pool_stats(config: ScheduleConfig) -> Dict:
     return {
         'H': H,
         'N': N,
-        'total_weekdays': len(weekday_dates),
+        'total_weekdays': len(effective_weekday_dates),  # Excludes Fridays when link active
         'total_weekends': len(weekend_dates),
         'total_fixed_weekdays': total_fixed_weekdays,
         'total_fixed_weekends': total_fixed_weekends,
@@ -67,6 +75,7 @@ def compute_pool_stats(config: ScheduleConfig) -> Dict:
         'fixed_weekdays_per_emp': fixed_weekdays_per_emp,
         'fixed_weekends_per_emp': fixed_weekends_per_emp,
         'fixed_dow': fixed_dow,
+        'link_friday_saturday': config.link_friday_saturday,
     }
 
 
@@ -112,9 +121,11 @@ def solve_schedule(config: ScheduleConfig, max_tolerance: int = 5, time_limit_se
                           f"Available: {stats['total_weekends']}"
         )
     
-    # Try solving with increasing tolerance
+    # SIMPLE STRATEGY: Try tolerances from 1 to max
+    # Give more time for complex scenarios (extra weekend + restrictions)
+    time_per_tolerance = max(30, time_limit_seconds // max_tolerance)
     for tolerance in range(1, max_tolerance + 1):
-        result = _solve_with_tolerance(config, stats, tolerance, time_limit_seconds)
+        result = _solve_with_tolerance(config, stats, tolerance, time_per_tolerance)
         if result.success:
             result.solve_time_seconds = time.time() - start_time
             return result
@@ -232,22 +243,37 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
     
     # 4. Pattern consistency: max 2 distinct weekdays per employee
     # Only applies to Mon-Thu (0-3), Friday (4) is exempt because of Fri-Sat link
-    # EXCLUDE vacation replacement days from pattern consistency
+    # EXCLUDE vacation replacement days AND fixed days from pattern consistency
     MON_THU = [0, 1, 2, 3]  # Monday=0, Tuesday=1, Wednesday=2, Thursday=3
+    
+    # Identify fixed Mon-Thu days per employee (these don't count towards 2-day limit)
+    emp_fixed_dow = {e.name: set() for e in employees}
+    for dow, emp_name in fixed_dow.items():
+        if dow in MON_THU and emp_name in emp_fixed_dow:
+            emp_fixed_dow[emp_name].add(dow)
+    
     for e in employees:
-        model.Add(sum(allowed[e.name, dow] for dow in MON_THU) <= 2)
+        # Pattern limit: 2 different Mon-Thu days from POOL only (excluding fixed days)
+        pool_days = [dow for dow in MON_THU if dow not in emp_fixed_dow[e.name]]
+        if pool_days:
+            model.Add(sum(allowed[e.name, dow] for dow in pool_days) <= 2)
         
         # If assigned to a Mon-Thu weekday, must have that day allowed
-        # BUT skip vacation replacement days - they don't count towards pattern
+        # BUT skip vacation replacement days AND fixed days - they don't count towards pattern
         for d in weekday_dates:
             dow = d.weekday()
             if dow in MON_THU and d not in vacation_replacement_dates:
+                # Skip if this is a fixed day for this employee
+                if dow in emp_fixed_dow[e.name]:
+                    continue
                 model.AddImplication(assign[e.name, d], allowed[e.name, dow])
     
     # 5. Extra weekend employee constraint
-    # The extra employee gets their H quota PLUS participates in remaining pool.
-    # This constraint will be combined with fairness below.
-    # (We remove the "exactly H" constraint - fairness will handle it)
+    # The extra employee must work at least H weekends (their quota)
+    for e in employees:
+        if e.is_extra_weekend:
+            we_total = sum(assign[e.name, d] for d in weekend_dates)
+            model.Add(we_total >= H)  # Must work at least H weekends
     
     # 6. Friday -> Saturday link (optional)
     if config.link_friday_saturday:
@@ -276,6 +302,55 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
     total_floor = total_remaining // N if N > 0 else 0
     total_ceil = (total_remaining + N - 1) // N if N > 0 else 0
     
+    # NOTE: Extra WE weekday fairness is handled differently:
+    # - When link is active: Sat = Fri (linked), so more Saturdays = more Fridays = more weekdays
+    # - Weekend spread constraint (includes extra WE) ensures equal WE pool share
+    # - Extra WE pool WD: try to match others (SOFT), but cannot exceed (HARD)
+    
+    # Extra WE weekday constraint:
+    # - Pool WD = wd_total - fixed_wd - linked_fri (Mon-Thu only when link active)
+    # - Pool WD <= wd_ceil (cannot exceed others) - HARD
+    # - Pool WD should match wd_floor (try to be equal) - SOFT (maximize)
+    extra_we_wd_deviation = []  # Track deviation from target for soft objective
+    
+    for e in employees:
+        if e.is_extra_weekend:
+            wd_total = sum(assign[e.name, d] for d in weekday_dates)
+            fixed_wd = stats['fixed_weekdays_per_emp'].get(e.name, 0)
+            
+            # Pool WD = weekdays - fixed (includes Fridays for everyone)
+            # This ensures Ritesh's total weekdays match others
+            pool_wd = wd_total - fixed_wd
+            
+            # Calculate wd_floor including Fridays
+            # Total weekday pool = len(weekday_dates) - total fixed
+            total_fixed_wd = sum(stats['fixed_weekdays_per_emp'].values())
+            wd_pool_with_fri = len(weekday_dates) - total_fixed_wd
+            wd_floor_with_fri = wd_pool_with_fri // N if N > 0 else 0
+            
+            pool_wd_var = model.NewIntVar(0, len(weekday_dates), f'pool_wd_{e.name}')
+            model.Add(pool_wd_var == pool_wd)
+            
+            # HARD: Absolute cap - cannot exceed floor + 1 (ensures feasibility while limiting)
+            model.Add(pool_wd <= wd_floor_with_fri + 1)
+            
+            # SOFT: Try to match wd_floor_with_fri exactly
+            # Deviation = how far from target (negative = below, positive = above)
+            deviation = model.NewIntVar(-len(weekday_dates), len(weekday_dates), f'wd_dev_{e.name}')
+            model.Add(deviation == pool_wd_var - wd_floor_with_fri)
+            
+            # Penalize going ABOVE floor EXTREMELY heavily (should not exceed others)
+            above_floor = model.NewIntVar(0, len(weekday_dates), f'above_floor_{e.name}')
+            model.AddMaxEquality(above_floor, [deviation, model.NewConstant(0)])
+            extra_we_wd_deviation.append(above_floor * 10000)  # EXTREME penalty for exceeding
+            
+            # Also penalize going below (try to maximize up to floor)
+            below_floor = model.NewIntVar(0, len(weekday_dates), f'below_floor_{e.name}')
+            neg_dev = model.NewIntVar(-len(weekday_dates), 0, f'neg_dev_{e.name}')
+            model.Add(neg_dev == -deviation)
+            model.AddMaxEquality(below_floor, [neg_dev, model.NewConstant(0)])
+            extra_we_wd_deviation.append(below_floor * 10)  # Low penalty for being below
+    
     # Classify employees
     restricted_sat_only = []
     restricted_sun_only = []
@@ -296,12 +371,18 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
     wd_vars = {}
     we_vars = {}
     total_vars = {}
+    actual_total_counts = {}  # For total spread: raw wd_total + we_total
+    sat_counts = {}
+    sun_counts = {}
     
     for e in employees:
         wd_total = sum(assign[e.name, d] for d in weekday_dates)
         we_total = sum(assign[e.name, d] for d in weekend_dates)
         sat_count = sum(assign[e.name, d] for d in saturday_dates)
         sun_count = sum(assign[e.name, d] for d in sunday_dates)
+        
+        # Store actual total for total spread constraint (raw counts, no adjustments)
+        actual_total_counts[e.name] = wd_total + we_total
         
         # QUOTA-BASED: Fixed quota is always H (weeks), not actual worked days
         # If employee has fixed weekday assignment, their quota is H
@@ -315,25 +396,38 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
             for dow in WEEKEND_DAYS
         )
         fixed_wd_quota = H if has_fixed_weekday else 0
+        
+        # When Friday→Saturday link is active, Fridays are not "free" weekdays
+        # They are tied to Saturday assignments, so we exclude them from wd_var
+        # This applies to ALL employees, not just extra weekend
+        friday_total = sum(assign[e.name, d] for d in friday_dates)
+        linked_friday_adjustment = friday_total if config.link_friday_saturday else 0
+        
         fixed_we_quota = H if has_fixed_weekend else 0
+        # Extra WE quota: H extra weekend assignments on top of normal pool share
         extra_we_quota = H if e.is_extra_weekend else 0
         
         # Variable counts: total worked - full quota (not actual fixed days worked)
-        wd_var = model.NewIntVar(0, len(weekday_dates), f'wd_var_{e.name}')
-        we_var = model.NewIntVar(0, len(weekend_dates), f'we_var_{e.name}')
-        total_var = model.NewIntVar(0, len(all_dates), f'total_var_{e.name}')
+        # When link is active, subtract Friday count since they're tied to Saturdays
+        wd_var = model.NewIntVar(-len(weekday_dates), len(weekday_dates), f'wd_var_{e.name}')
+        we_var = model.NewIntVar(-len(weekend_dates), len(weekend_dates), f'we_var_{e.name}')
+        total_var = model.NewIntVar(-len(all_dates), len(all_dates), f'total_var_{e.name}')
         
-        model.Add(wd_var == wd_total - fixed_wd_quota)
+        model.Add(wd_var == wd_total - fixed_wd_quota - linked_friday_adjustment)
         model.Add(we_var == we_total - fixed_we_quota - extra_we_quota)
         model.Add(total_var == wd_var + we_var)
         
         wd_vars[e.name] = wd_var
         we_vars[e.name] = we_var
         total_vars[e.name] = total_var
+        sat_counts[e.name] = sat_count
+        sun_counts[e.name] = sun_count
         
         # BOUNDS: Ensure fair distribution with some flexibility
         # Weekday bounds
-        model.Add(wd_var >= max(0, wd_floor - 1))
+        # For extra WE with link active: Mon-Thu can be 0 if Fridays fill quota
+        wd_min = 0 if (e.is_extra_weekend and config.link_friday_saturday) else max(0, wd_floor - 1)
+        model.Add(wd_var >= wd_min)
         model.Add(wd_var <= wd_ceil + tolerance + 1)
         
         # Weekend bounds - CRITICAL: everyone must get at least we_floor - 1 weekends
@@ -343,42 +437,128 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         # Sat/Sun restrictions based on employee type
         if e in restricted_sat_only:
             model.Add(sun_count == 0)
-            # Restricted employee gets exactly we_ceil (max) weekends from Saturdays
-            model.Add(we_var == we_ceil)
         elif e in restricted_sun_only:
             model.Add(sat_count == 0)
-            # Restricted employee gets exactly we_ceil (max) weekends from Sundays
-            model.Add(we_var == we_ceil)
-        else:
-            # Unrestricted: balance Sat/Sun (soft - allow tolerance)
-            model.Add(sat_count - sun_count <= 1 + tolerance)
-            model.Add(sun_count - sat_count <= 1 + tolerance)
+        elif e.is_extra_weekend:
+            # Extra WE (Ritesh): No Sat/Sun balance constraint
+            # This allows more flexibility to minimize Saturdays (and linked Fridays)
+            pass
+        # No per-person Sat/Sun balance for unrestricted - use spread instead
     
-    # SPREAD CONSTRAINTS (using tolerance)
+    # SATURDAY SPREAD (excluding restricted_sat_only AND extra_weekend employees)
+    # Extra WE employees (Ritesh) have higher counts, exclude from spread
+    pool_sat_employees = [e for e in employees 
+                          if e not in restricted_sat_only and not e.is_extra_weekend]
+    non_sat_only_sat_counts = [sat_counts[e.name] for e in pool_sat_employees]
+    if non_sat_only_sat_counts:
+        sat_max = model.NewIntVar(0, len(saturday_dates), 'pool_sat_max')
+        sat_min = model.NewIntVar(0, len(saturday_dates), 'pool_sat_min')
+        model.AddMaxEquality(sat_max, non_sat_only_sat_counts)
+        model.AddMinEquality(sat_min, non_sat_only_sat_counts)
+        model.Add(sat_max - sat_min <= 1)  # HARD: spread 1
     
-    # 1. TOTAL spread
-    total_var_list = list(total_vars.values())
-    total_max_var = model.NewIntVar(0, len(all_dates), 'total_max')
-    total_min_var = model.NewIntVar(0, len(all_dates), 'total_min')
-    model.AddMaxEquality(total_max_var, total_var_list)
-    model.AddMinEquality(total_min_var, total_var_list)
-    model.Add(total_max_var - total_min_var <= tolerance)
+    # SUNDAY SPREAD (excluding restricted_sun_only, restricted_sat_only, AND extra_weekend)
+    pool_sun_employees = [e for e in employees 
+                          if e not in restricted_sun_only 
+                          and e not in restricted_sat_only 
+                          and not e.is_extra_weekend]
+    non_sun_only_sun_counts = [sun_counts[e.name] for e in pool_sun_employees]
+    if non_sun_only_sun_counts:
+        sun_max = model.NewIntVar(0, len(sunday_dates), 'pool_sun_max')
+        sun_min = model.NewIntVar(0, len(sunday_dates), 'pool_sun_min')
+        model.AddMaxEquality(sun_max, non_sun_only_sun_counts)
+        model.AddMinEquality(sun_min, non_sun_only_sun_counts)
+        model.Add(sun_max - sun_min <= 1)  # HARD: spread 1
     
-    # 2. Weekday spread
-    wd_var_list = list(wd_vars.values())
-    wd_max_var = model.NewIntVar(0, len(weekday_dates), 'wd_max')
-    wd_min_var = model.NewIntVar(0, len(weekday_dates), 'wd_min')
-    model.AddMaxEquality(wd_max_var, wd_var_list)
-    model.AddMinEquality(wd_min_var, wd_var_list)
-    model.Add(wd_max_var - wd_min_var <= tolerance)
+    # SPREAD CONSTRAINTS - ALL HARD RULES: max spread 1
+    # Exclude extra WE employees (their we_var=0 vs others we_var≈we_floor makes spread impossible)
+    pool_employees = [e for e in employees if not e.is_extra_weekend]
     
-    # 3. Weekend spread
-    we_var_list = list(we_vars.values())
-    we_max_var = model.NewIntVar(0, len(weekend_dates), 'we_max')
-    we_min_var = model.NewIntVar(0, len(weekend_dates), 'we_min')
-    model.AddMaxEquality(we_max_var, we_var_list)
-    model.AddMinEquality(we_min_var, we_var_list)
-    model.Add(we_max_var - we_min_var <= tolerance)
+    # 1. TOTAL spread via ANTI-CORRELATION (excluding extra WE)
+    # Instead of a hard max-min constraint, we use anti-correlation:
+    # If an employee gets ceil in WD pool, they must get floor in WE pool.
+    # This mathematically guarantees Total spread <= 1 when combined with
+    # individual WD/WE spread constraints.
+    
+    # Calculate actual pool statistics for anti-correlation
+    # For employees without extra WE: wd_actual = wd_total (raw weekday count)
+    # we_actual = we_total (raw weekend count)
+    
+    # Pool parameters (using actual assignment counts, not vars)
+    N_pool = len(pool_employees)
+    
+    if N_pool > 0:
+        # Calculate what the actual weekday pool looks like for pool employees
+        # When link is active and extra WE exists, their Fridays are committed to Saturdays
+        # So we subtract extra WE's Friday quota (wd_ceil) from the pool
+        extra_we_friday_quota = wd_ceil if (config.link_friday_saturday and config.get_extra_weekend_employee()) else 0
+        actual_wd_pool = len(weekday_dates) - stats['total_fixed_weekdays'] - extra_we_friday_quota
+        actual_we_pool = len(weekend_dates) - stats['total_fixed_weekends'] - stats['extra_weekend_quota']
+        
+        actual_wd_floor = actual_wd_pool // N_pool
+        actual_wd_ceil = (actual_wd_pool + N_pool - 1) // N_pool
+        actual_we_floor = actual_we_pool // N_pool
+        actual_we_ceil = (actual_we_pool + N_pool - 1) // N_pool
+        
+        wd_has_remainder = (actual_wd_pool % N_pool) > 0
+        we_has_remainder = (actual_we_pool % N_pool) > 0
+        
+        # Anti-correlation: if both pools have remainders, prevent getting ceil in both
+        if wd_has_remainder and we_has_remainder:
+            for e in pool_employees:
+                # Get actual counts (not adjusted for linked Fridays etc)
+                actual_wd = sum(assign[e.name, d] for d in weekday_dates)
+                fixed_wd_quota = stats['fixed_weekdays_per_emp'].get(e.name, 0)
+                actual_wd_var = actual_wd - fixed_wd_quota  # Actual variable weekdays
+                
+                actual_we = sum(assign[e.name, d] for d in weekend_dates)
+                fixed_we_quota = stats['fixed_weekends_per_emp'].get(e.name, 0)
+                actual_we_var = actual_we - fixed_we_quota  # Actual variable weekends
+                
+                # Boolean: is this employee at WD ceil?
+                is_wd_high = model.NewBoolVar(f'is_wd_high_{e.name}')
+                model.Add(actual_wd_var > actual_wd_floor).OnlyEnforceIf(is_wd_high)
+                model.Add(actual_wd_var <= actual_wd_floor).OnlyEnforceIf(is_wd_high.Not())
+                
+                # If WD is high (ceil), then WE must be low (floor)
+                model.Add(actual_we_var <= actual_we_floor).OnlyEnforceIf(is_wd_high)
+    
+    # 2. Weekday spread - HARD (pool employees only)
+    # Extra WE is handled by total pool share constraint
+    actual_wd_totals = []
+    for e in pool_employees:  # Exclude extra WE
+        actual_wd = sum(assign[e.name, d] for d in weekday_dates)
+        fixed_wd = stats['fixed_weekdays_per_emp'].get(e.name, 0)
+        actual_wd_var = model.NewIntVar(0, len(weekday_dates), f'actual_wd_var_{e.name}')
+        model.Add(actual_wd_var == actual_wd - fixed_wd)
+        actual_wd_totals.append(actual_wd_var)
+    
+    if actual_wd_totals:
+        wd_max_var = model.NewIntVar(0, len(weekday_dates), 'wd_max')
+        wd_min_var = model.NewIntVar(0, len(weekday_dates), 'wd_min')
+        model.AddMaxEquality(wd_max_var, actual_wd_totals)
+        model.AddMinEquality(wd_min_var, actual_wd_totals)
+        model.Add(wd_max_var - wd_min_var <= 1)  # HARD: max spread 1
+    
+    # 3. Weekend spread - HARD (ALL employees, VarWE = we - fixed - H for extra WE)
+    actual_we_totals = []
+    for e in employees:  # ALL employees including extra WE
+        actual_we = sum(assign[e.name, d] for d in weekend_dates)
+        fixed_we = stats['fixed_weekends_per_emp'].get(e.name, 0)
+        extra_we = H if e.is_extra_weekend else 0  # Subtract H for extra WE
+        actual_we_var = model.NewIntVar(0, len(weekend_dates), f'actual_we_var_{e.name}')
+        model.Add(actual_we_var == actual_we - fixed_we - extra_we)
+        actual_we_totals.append(actual_we_var)
+    
+    if actual_we_totals:
+        we_max_var = model.NewIntVar(0, len(weekend_dates), 'we_max')
+        we_min_var = model.NewIntVar(0, len(weekend_dates), 'we_min')
+        model.AddMaxEquality(we_max_var, actual_we_totals)
+        model.AddMinEquality(we_min_var, actual_we_totals)
+        model.Add(we_max_var - we_min_var <= 1)  # HARD: max spread 1
+    
+    # NOTE: Total fairness is ensured by WD spread (pool) + WE spread (all with H subtracted)
+    # WD + WE spread together provide balanced distribution
     
     # ==================== SOFT OBJECTIVES ====================
     
@@ -394,9 +574,9 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
     model.Add(we_spread == we_max_var - we_min_var)
     objectives.append(we_spread * 1000)  # Very high weight
     
-    total_spread = model.NewIntVar(0, len(all_dates), 'total_spread')
-    model.Add(total_spread == total_max_var - total_min_var)
-    objectives.append(total_spread * 1000)  # Very high weight
+    # PRIORITY 2: Minimize extra WE weekday deviation (try to match others' pool WD)
+    for dev in extra_we_wd_deviation:
+        objectives.append(dev * 500)  # High weight - maximize extra WE pool WD
     
     # 1. Minimize fairness deviation (weekday)
     for e in employees:
@@ -517,6 +697,13 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
             s.fixed_weekends = stats['fixed_weekends_per_emp'].get(e.name, 0)
             s.variable_weekdays = s.weekday_duties - s.fixed_weekdays
             s.variable_weekends = s.weekend_duties - s.fixed_weekends
+            
+            # When link is active, linked Fridays are tied to Saturdays
+            # So subtract Friday count from variable weekdays for ALL employees
+            if config.link_friday_saturday:
+                s.variable_weekdays -= s.friday_count
+            
+            # Extra WE adjustments
             if e.is_extra_weekend:
                 s.variable_weekends -= H
             
