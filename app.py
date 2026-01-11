@@ -21,7 +21,7 @@ from excel_utils import export_schedule_to_bytes
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
     page_title="Piket Scheduler",
-    page_icon="📅",
+    page_icon="🚢",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -167,7 +167,13 @@ init_session_state()
 
 # ==================== SIDEBAR ====================
 with st.sidebar:
-    st.markdown("## ⚙️ Schedule Settings")
+    # NextLogic Logo
+    try:
+        st.image("nextlogic_logo.png", width=150)
+    except:
+        pass  # Logo not found, continue without it
+    
+    st.markdown("## 🚢 Schedule Settings")
     
     # Year
     current_year = date.today().year
