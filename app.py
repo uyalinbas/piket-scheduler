@@ -167,12 +167,6 @@ init_session_state()
 
 # ==================== SIDEBAR ====================
 with st.sidebar:
-    # NextLogic Logo
-    try:
-        st.image("nextlogic_logo.png", width=150)
-    except:
-        pass  # Logo not found, continue without it
-    
     st.markdown("## 🚢 Schedule Settings")
     
     # Year
