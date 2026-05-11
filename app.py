@@ -458,7 +458,7 @@ auto_relax = st.checkbox(
 
 col1, col2 = st.columns([3, 1])
 with col2:
-    max_tolerance = st.number_input("Max tolerance", min_value=1, max_value=10, value=4)
+    max_tolerance = st.number_input("Max tolerance", min_value=1, max_value=10, value=5)
 
 st.divider()
 
@@ -529,11 +529,15 @@ if st.button("🔧 Solve Schedule", type="primary", use_container_width=True):
         for err in errors:
             st.error(err)
     else:
-        with st.spinner("Solving... This may take a moment."):
+        # Scale time limit with horizon length
+        num_weeks = config.get_num_weeks()
+        time_limit = 60 if num_weeks <= 30 else min(180, 60 + num_weeks * 2)
+        
+        with st.spinner(f"Solving {num_weeks}-week schedule... This may take up to {time_limit}s."):
             result = solve_schedule(
                 config,
                 max_tolerance=max_tolerance if auto_relax else weekday_tolerance,
-                time_limit_seconds=60
+                time_limit_seconds=time_limit
             )
             st.session_state.schedule_result = result
 
