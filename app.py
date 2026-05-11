@@ -782,10 +782,15 @@ if wheel_names:
                 
                 // Determine winner
                 const segAngle = (2 * Math.PI) / segments.length;
-                const normalizedAngle = ((2 * Math.PI - (currentAngle % (2 * Math.PI))) + (2 * Math.PI)) % (2 * Math.PI);
-                // Arrow is at top (3π/2), so offset by that
-                const pointerAngle = (normalizedAngle + Math.PI / 2) % (2 * Math.PI);
-                const winnerIndex = Math.floor(pointerAngle / segAngle) % segments.length;
+                // Arrow points DOWN from top. Canvas 0° is at 3 o'clock (right).
+                // Top of wheel = -π/2 (or 3π/2). Arrow at top means we check angle at -π/2.
+                // currentAngle is the rotation offset applied to segment 0's start.
+                // The angle under the arrow (top) = -π/2 relative to canvas.
+                // Segment i starts at: currentAngle + i * segAngle
+                // We need: currentAngle + i * segAngle <= -π/2 < currentAngle + (i+1) * segAngle
+                // Solve for i: i = floor((-π/2 - currentAngle) / segAngle)
+                const raw = (-Math.PI / 2 - currentAngle) / segAngle;
+                const winnerIndex = ((Math.floor(raw) % segments.length) + segments.length) % segments.length;
                 const winner = segments[winnerIndex].label;
                 
                 // Show winner with animation
