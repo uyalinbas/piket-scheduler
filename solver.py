@@ -566,8 +566,23 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         model.AddMinEquality(we_min_var, actual_we_totals)
         model.Add(we_max_var - we_min_var <= tolerance)  # HARD: spread with tolerance
     
-    # NOTE: Total fairness is ensured by WD spread (pool) + WE spread (all with H subtracted)
-    # WD + WE spread together provide balanced distribution
+    # 4. TOTAL spread - ensure total duties (WD + WE) are balanced
+    total_all_dates = len(all_dates)
+    actual_total_totals = []
+    for e in employees:
+        total_duties = sum(assign[e.name, d] for d in all_dates)
+        fixed_total = stats['fixed_weekdays_per_emp'].get(e.name, 0) + stats['fixed_weekends_per_emp'].get(e.name, 0)
+        extra_we = H if e.is_extra_weekend else 0
+        actual_total_var = model.NewIntVar(0, total_all_dates, f'actual_total_var_{e.name}')
+        model.Add(actual_total_var == total_duties - fixed_total - extra_we)
+        actual_total_totals.append(actual_total_var)
+    
+    if actual_total_totals:
+        total_max_var = model.NewIntVar(0, total_all_dates, 'total_max')
+        total_min_var = model.NewIntVar(0, total_all_dates, 'total_min')
+        model.AddMaxEquality(total_max_var, actual_total_totals)
+        model.AddMinEquality(total_min_var, actual_total_totals)
+        model.Add(total_max_var - total_min_var <= 1)  # HARD: max spread 1 for total
     
     # ==================== SOFT OBJECTIVES ====================
     
