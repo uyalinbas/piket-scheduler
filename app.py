@@ -169,23 +169,34 @@ init_session_state()
 with st.sidebar:
     st.markdown("## 🚢 Schedule Settings")
     
-    # Year
+    # Date range
     current_year = date.today().year
-    year = st.selectbox("Year", options=list(range(current_year - 1, current_year + 3)), index=1)
+    year_options = list(range(current_year - 1, current_year + 3))
     
-    # Week range
+    st.markdown("**Start**")
     col1, col2 = st.columns(2)
     with col1:
-        start_week = st.number_input("Start Week", min_value=1, max_value=53, value=1)
+        start_year = st.selectbox("Year##start", options=year_options, index=1, label_visibility="collapsed")
     with col2:
-        end_week = st.number_input("End Week", min_value=1, max_value=53, value=27)
+        start_week = st.number_input("Week##start", min_value=1, max_value=53, value=1)
     
-    # Compute date range from weeks
+    st.markdown("**End**")
+    col1, col2 = st.columns(2)
+    with col1:
+        end_year = st.selectbox("Year##end", options=year_options, index=1, label_visibility="collapsed")
+    with col2:
+        end_week = st.number_input("Week##end", min_value=1, max_value=53, value=27)
+    
+    # Compute date range
     try:
-        start_date, end_date = get_date_range_from_weeks(year, start_week, end_week)
+        start_date, _ = get_date_range_from_weeks(start_year, start_week, start_week)
+        _, end_date = get_date_range_from_weeks(end_year, end_week, end_week)
+        if end_date <= start_date:
+            st.warning("⚠️ End must be after start")
+            end_date = start_date + timedelta(weeks=26)
     except:
-        start_date = date(year, 1, 6)
-        end_date = date(year, 7, 5)
+        start_date = date(start_year, 1, 6)
+        end_date = date(end_year, 7, 5)
     
     # Show date range
     st.markdown(f"📅 **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}**")
