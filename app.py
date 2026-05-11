@@ -627,3 +627,216 @@ if st.session_state.schedule_result:
     
     else:
         st.error(f"❌ {result.error_message}")
+
+# ==================== RANDOM PICKER WHEEL ====================
+st.markdown("---")
+st.markdown('<div class="section-header">🎰 Random Duty Picker</div>', unsafe_allow_html=True)
+st.markdown('<div class="section-desc">Need to assign an extra duty? Spin the wheel!</div>', unsafe_allow_html=True)
+
+# Get employee names for the wheel
+wheel_names_input = st.text_input(
+    "Enter names (comma-separated)", 
+    value=", ".join([e.name for e in st.session_state.employees]) if st.session_state.employees else "Frank, Ilonka, Leo, Ritesh, Roemer, Sophie, Steven, Tim, Utku",
+    key="wheel_names"
+)
+wheel_names = [n.strip() for n in wheel_names_input.split(",") if n.strip()]
+
+if wheel_names:
+    # Build the wheel HTML/JS component
+    colors = [
+        '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', 
+        '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9',
+        '#F0B27A', '#82E0AA', '#F1948A', '#85929E', '#73C6B6'
+    ]
+    
+    # Create segments data for JS
+    segments_js = ", ".join([f'{{label: "{name}", color: "{colors[i % len(colors)]}"}}' for i, name in enumerate(wheel_names)])
+    
+    wheel_html = f"""
+    <div id="wheel-container" style="display: flex; flex-direction: column; align-items: center; padding: 20px;">
+        <div style="position: relative; display: inline-block;">
+            <!-- Arrow pointer -->
+            <div style="position: absolute; top: -20px; left: 50%; transform: translateX(-50%); z-index: 10; font-size: 36px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));">▼</div>
+            <canvas id="wheelCanvas" width="400" height="400" style="border-radius: 50%; box-shadow: 0 8px 32px rgba(0,0,0,0.15);"></canvas>
+        </div>
+        
+        <button id="spinBtn" onclick="spinWheel()" style="
+            margin-top: 24px;
+            padding: 16px 48px;
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            transition: all 0.3s ease;
+            letter-spacing: 1px;
+        " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+            🎲 SPIN THE WHEEL
+        </button>
+        
+        <div id="result" style="
+            margin-top: 20px;
+            font-size: 28px;
+            font-weight: 800;
+            color: #1a1a2e;
+            min-height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        "></div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.2/dist/confetti.browser.min.js"></script>
+    
+    <script>
+    const segments = [{segments_js}];
+    const canvas = document.getElementById('wheelCanvas');
+    const ctx = canvas.getContext('2d');
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const radius = 190;
+    let currentAngle = 0;
+    let isSpinning = false;
+    
+    function drawWheel(angle) {{
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const segAngle = (2 * Math.PI) / segments.length;
+        
+        segments.forEach((seg, i) => {{
+            const startAngle = angle + i * segAngle;
+            const endAngle = startAngle + segAngle;
+            
+            // Draw segment
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+            ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+            ctx.closePath();
+            ctx.fillStyle = seg.color;
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            
+            // Draw text
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            ctx.rotate(startAngle + segAngle / 2);
+            ctx.textAlign = 'right';
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 14px Inter, Arial, sans-serif';
+            ctx.shadowColor = 'rgba(0,0,0,0.5)';
+            ctx.shadowBlur = 3;
+            ctx.fillText(seg.label, radius - 15, 5);
+            ctx.restore();
+        }});
+        
+        // Center circle
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 25, 0, 2 * Math.PI);
+        ctx.fillStyle = '#1a1a2e';
+        ctx.fill();
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Center dot
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 5, 0, 2 * Math.PI);
+        ctx.fillStyle = 'white';
+        ctx.fill();
+    }}
+    
+    function spinWheel() {{
+        if (isSpinning) return;
+        isSpinning = true;
+        
+        const btn = document.getElementById('spinBtn');
+        btn.style.opacity = '0.5';
+        btn.style.cursor = 'not-allowed';
+        document.getElementById('result').innerHTML = '';
+        
+        const spinDuration = 4000 + Math.random() * 2000;
+        const totalRotation = (5 + Math.random() * 5) * 2 * Math.PI;
+        const startAngle = currentAngle;
+        const startTime = performance.now();
+        
+        function animate(now) {{
+            const elapsed = now - startTime;
+            const progress = Math.min(elapsed / spinDuration, 1);
+            
+            // Cubic ease-out for natural deceleration
+            const eased = 1 - Math.pow(1 - progress, 3);
+            currentAngle = startAngle + totalRotation * eased;
+            
+            drawWheel(currentAngle);
+            
+            if (progress < 1) {{
+                requestAnimationFrame(animate);
+            }} else {{
+                isSpinning = false;
+                btn.style.opacity = '1';
+                btn.style.cursor = 'pointer';
+                
+                // Determine winner
+                const segAngle = (2 * Math.PI) / segments.length;
+                const normalizedAngle = ((2 * Math.PI - (currentAngle % (2 * Math.PI))) + (2 * Math.PI)) % (2 * Math.PI);
+                // Arrow is at top (3π/2), so offset by that
+                const pointerAngle = (normalizedAngle + Math.PI / 2) % (2 * Math.PI);
+                const winnerIndex = Math.floor(pointerAngle / segAngle) % segments.length;
+                const winner = segments[winnerIndex].label;
+                
+                // Show winner with animation
+                const resultDiv = document.getElementById('result');
+                resultDiv.innerHTML = '🎉 <span style="color: #667eea; font-size: 36px;">' + winner + '</span> 🎉';
+                resultDiv.style.animation = 'none';
+                resultDiv.offsetHeight;
+                resultDiv.style.animation = 'popIn 0.5s ease-out';
+                
+                // CONFETTI!
+                const duration = 3000;
+                const end = Date.now() + duration;
+                
+                (function frame() {{
+                    confetti({{
+                        particleCount: 7,
+                        angle: 60,
+                        spread: 55,
+                        origin: {{ x: 0, y: 0.7 }},
+                        colors: ['#667eea', '#764ba2', '#FF6B6B', '#4ECDC4', '#FFEAA7']
+                    }});
+                    confetti({{
+                        particleCount: 7,
+                        angle: 120,
+                        spread: 55,
+                        origin: {{ x: 1, y: 0.7 }},
+                        colors: ['#667eea', '#764ba2', '#FF6B6B', '#4ECDC4', '#FFEAA7']
+                    }});
+                    
+                    if (Date.now() < end) {{
+                        requestAnimationFrame(frame);
+                    }}
+                }}());
+            }}
+        }}
+        
+        requestAnimationFrame(animate);
+    }}
+    
+    // Initial draw
+    drawWheel(currentAngle);
+    </script>
+    
+    <style>
+    @keyframes popIn {{
+        0% {{ transform: scale(0.3); opacity: 0; }}
+        50% {{ transform: scale(1.2); }}
+        100% {{ transform: scale(1); opacity: 1; }}
+    }}
+    </style>
+    """
+    
+    import streamlit.components.v1 as components
+    components.html(wheel_html, height=600)
