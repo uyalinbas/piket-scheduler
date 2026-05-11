@@ -169,29 +169,27 @@ init_session_state()
 with st.sidebar:
     st.markdown("## 🚢 Schedule Settings")
     
-    # Date range with calendar picker
+    # Year and week range
     current_year = date.today().year
     
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input(
-            "Start Date",
-            value=date(current_year, 1, 6),
-            min_value=date(current_year - 1, 1, 1),
-            max_value=date(current_year + 3, 12, 31),
-        )
+        start_year = st.selectbox("Start Year", options=list(range(current_year - 1, current_year + 3)), index=1)
+        start_week = st.number_input("Start Week", min_value=1, max_value=53, value=1)
     with col2:
-        end_date = st.date_input(
-            "End Date",
-            value=date(current_year, 7, 5),
-            min_value=date(current_year - 1, 1, 1),
-            max_value=date(current_year + 3, 12, 31),
-        )
+        end_year = st.selectbox("End Year", options=list(range(current_year - 1, current_year + 3)), index=1)
+        end_week = st.number_input("End Week", min_value=1, max_value=53, value=27)
     
-    # Validate dates
-    if end_date <= start_date:
-        st.warning("⚠️ End date must be after start date")
-        end_date = start_date + timedelta(weeks=26)
+    # Compute date range from weeks
+    try:
+        start_date, _ = get_date_range_from_weeks(start_year, start_week, start_week)
+        _, end_date = get_date_range_from_weeks(end_year, end_week, end_week)
+    except:
+        start_date = date(start_year, 1, 6)
+        end_date = date(end_year, 7, 5)
+    
+    # Show date range
+    st.markdown(f"📅 **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}**")
     
     st.divider()
     
