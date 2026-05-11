@@ -253,10 +253,12 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
             emp_fixed_dow[emp_name].add(dow)
     
     for e in employees:
-        # Pattern limit: 2 different Mon-Thu days from POOL only (excluding fixed days)
+        # Pattern limit: max distinct Mon-Thu days from POOL (excluding fixed days)
+        # Scale with horizon: 2 for <=30 weeks, 3 for longer periods
         pool_days = [dow for dow in MON_THU if dow not in emp_fixed_dow[e.name]]
+        max_days = 2 if H <= 30 else min(3, len(pool_days))
         if pool_days:
-            model.Add(sum(allowed[e.name, dow] for dow in pool_days) <= 2)
+            model.Add(sum(allowed[e.name, dow] for dow in pool_days) <= max_days)
         
         # If assigned to a Mon-Thu weekday, must have that day allowed
         # BUT skip vacation replacement days AND fixed days - they don't count towards pattern
