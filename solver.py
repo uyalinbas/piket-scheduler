@@ -506,8 +506,12 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         we_has_remainder = (actual_we_pool % N_pool) > 0
         
         # Anti-correlation: if both pools have remainders, prevent getting ceil in both
+        # SKIP restricted employees (sat-only, sun-only) - their WE split is naturally unbalanced
         if wd_has_remainder and we_has_remainder:
-            for e in pool_employees:
+            anti_corr_employees = [e for e in pool_employees 
+                                   if e not in restricted_sat_only 
+                                   and e not in restricted_sun_only]
+            for e in anti_corr_employees:
                 # Get actual counts (not adjusted for linked Fridays etc)
                 actual_wd = sum(assign[e.name, d] for d in weekday_dates)
                 fixed_wd_quota = stats['fixed_weekdays_per_emp'].get(e.name, 0)
