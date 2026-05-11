@@ -457,7 +457,7 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         sat_min = model.NewIntVar(0, len(saturday_dates), 'pool_sat_min')
         model.AddMaxEquality(sat_max, non_sat_only_sat_counts)
         model.AddMinEquality(sat_min, non_sat_only_sat_counts)
-        model.Add(sat_max - sat_min <= 1)  # HARD: spread 1
+        model.Add(sat_max - sat_min <= tolerance)  # HARD: spread with tolerance
     
     # SUNDAY SPREAD (excluding restricted_sun_only, restricted_sat_only, AND extra_weekend)
     pool_sun_employees = [e for e in employees 
@@ -470,7 +470,7 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         sun_min = model.NewIntVar(0, len(sunday_dates), 'pool_sun_min')
         model.AddMaxEquality(sun_max, non_sun_only_sun_counts)
         model.AddMinEquality(sun_min, non_sun_only_sun_counts)
-        model.Add(sun_max - sun_min <= 1)  # HARD: spread 1
+        model.Add(sun_max - sun_min <= tolerance)  # HARD: spread with tolerance
     
     # SPREAD CONSTRAINTS - ALL HARD RULES: max spread 1
     # Exclude extra WE employees (their we_var=0 vs others we_var≈we_floor makes spread impossible)
@@ -540,7 +540,7 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         wd_min_var = model.NewIntVar(0, len(weekday_dates), 'wd_min')
         model.AddMaxEquality(wd_max_var, actual_wd_totals)
         model.AddMinEquality(wd_min_var, actual_wd_totals)
-        model.Add(wd_max_var - wd_min_var <= 1)  # HARD: max spread 1
+        model.Add(wd_max_var - wd_min_var <= tolerance)  # HARD: spread with tolerance
     
     # 3. Weekend spread - HARD (ALL employees, VarWE = we - fixed - H for extra WE)
     actual_we_totals = []
@@ -557,7 +557,7 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         we_min_var = model.NewIntVar(0, len(weekend_dates), 'we_min')
         model.AddMaxEquality(we_max_var, actual_we_totals)
         model.AddMinEquality(we_min_var, actual_we_totals)
-        model.Add(we_max_var - we_min_var <= 1)  # HARD: max spread 1
+        model.Add(we_max_var - we_min_var <= tolerance)  # HARD: spread with tolerance
     
     # NOTE: Total fairness is ensured by WD spread (pool) + WE spread (all with H subtracted)
     # WD + WE spread together provide balanced distribution
