@@ -427,8 +427,9 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         
         # BOUNDS: Ensure fair distribution with some flexibility
         # Weekday bounds
-        # For extra WE with link active: Mon-Thu can be 0 if Fridays fill quota
-        wd_min = 0 if (e.is_extra_weekend and config.link_friday_saturday) else max(0, wd_floor - 1)
+        # When link active: any employee might get more Saturdays (and thus Fridays)
+        # so their Mon-Thu (wd_var after subtracting Fridays) can be much lower
+        wd_min = 0 if config.link_friday_saturday else max(0, wd_floor - 1)
         model.Add(wd_var >= wd_min)
         model.Add(wd_var <= wd_ceil + tolerance + 1)
         
@@ -505,17 +506,18 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
         wd_has_remainder = (actual_wd_pool % N_pool) > 0
         we_has_remainder = (actual_we_pool % N_pool) > 0
         
-        # Anti-correlation: if both pools have remainders, prevent getting ceil in both
-        # SKIP restricted employees (sat-only, sun-only) - their WE split is naturally unbalanced
+        # Anti-correlation uses same weekday dates as spread (excluding linked Fridays)
+        anti_corr_spread_wd = [d for d in weekday_dates if not (config.link_friday_saturday and d.weekday() == FRIDAY)]
+        
         if wd_has_remainder and we_has_remainder:
             anti_corr_employees = [e for e in pool_employees 
                                    if e not in restricted_sat_only 
                                    and e not in restricted_sun_only]
             for e in anti_corr_employees:
-                # Get actual counts (not adjusted for linked Fridays etc)
-                actual_wd = sum(assign[e.name, d] for d in weekday_dates)
+                # Get actual counts (excluding linked Fridays)
+                actual_wd = sum(assign[e.name, d] for d in anti_corr_spread_wd)
                 fixed_wd_quota = stats['fixed_weekdays_per_emp'].get(e.name, 0)
-                actual_wd_var = actual_wd - fixed_wd_quota  # Actual variable weekdays
+                actual_wd_var = actual_wd - fixed_wd_quota
                 
                 actual_we = sum(assign[e.name, d] for d in weekend_dates)
                 fixed_we_quota = stats['fixed_weekends_per_emp'].get(e.name, 0)
@@ -531,6 +533,7 @@ def _solve_with_tolerance(config: ScheduleConfig, stats: Dict, tolerance: int, t
     
     # 2. Weekday spread - HARD (pool employees only)
     # Extra WE is handled by total pool share constraint
+    # Use ALL weekdays including Friday - total Mon-Fri should be balanced
     actual_wd_totals = []
     for e in pool_employees:  # Exclude extra WE
         actual_wd = sum(assign[e.name, d] for d in weekday_dates)
